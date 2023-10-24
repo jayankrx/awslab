@@ -1,0 +1,185 @@
+Mappings: 
+  RegionMap: 
+    eu-west-2: 
+      "HVM64": "ami-0b2287cff5d6be10f"
+    us-west-2: 
+      "HVM64": "ami-038937b3d6616035f"
+    ap-south-1: 
+      "HVM64": "ami-03d294e37a4820c21"
+    
+
+Parameters:
+  MyInstanceTypeParameter:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.nano
+      - t2.small
+    Description: Enter t2.micro, t2.small, or t2.nano. Default is t2.micro.
+    
+  MyKeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+    
+    
+  MySubnet:
+    Type: AWS::EC2::Subnet::Id
+  MyVPC:
+    Type: AWS::EC2::VPC::Id
+Resources:
+  MyEC2:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT5M
+    
+    Metadata: 
+      AWS::CloudFormation::Authentication: 
+          rolebased: 
+            type: "S3"
+            buckets: 
+              - "tvm23california"
+            roleName: "aws22EC2S3access"
+      AWS::CloudFormation::Init: 
+        configSets:
+          MyConfigset:
+           - config1
+           - config2
+            
+        config1: 
+          packages: 
+            yum:
+              httpd: []
+              php: []
+          sources: 
+            /var/www/html: https://tvm23california.s3.us-west-1.amazonaws.com/appv3.zip
+          files: 
+            /var/www/html/dbinfo.inc:
+             content: |
+              <?php
+
+                define('DB_SERVER', 'database-1.cfbcovnbl55f.eu-west-2.rds.amazonaws.com');
+                define('DB_USERNAME', 'admin');
+                define('DB_PASSWORD', 'abcd1234');
+                define('DB_DATABASE', 'sample');
+                
+                ?>
+            
+          commands:
+              test1:
+                command: chown -R ec2-user:apache /var/www
+            
+              test2:
+                command: chmod 2775 /var/www
+                
+              test3:
+                command: find /var/www -type d -exec sudo chmod 2775 {} \;
+                
+              test4:
+                command: find /var/www -type f -exec sudo chmod 0664 {} \;
+                
+          services: 
+            sysvinit:
+              httpd:
+                enabled: "true"
+                ensureRunning: "true"
+                
+        config2:
+          files:
+            /etc/cfn/cfn-hup.conf:
+                content: !Sub |
+                     [main]
+                     stack=${AWS::StackName}
+                     region=${AWS::Region}
+                     interval=2
+                     verbose=true
+                mode: '000400'
+                owner: root
+                group: root
+            
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update,post.add
+                path=Resources.MyEC2.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource MyEC2 --configsets MyConfigset --region ${AWS::Region}
+                runas=root
+              mode: "000400"
+              owner: "root"
+              group: "root"
+          
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+                  
+    Properties: 
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", HVM64]
+      InstanceType: !Ref MyInstanceTypeParameter
+      KeyName: !Ref MyKeyPair
+      SubnetId: !Ref MySubnet
+      IamInstanceProfile: aws22EC2S3access
+      SecurityGroupIds: 
+        - !Ref MySG
+      Tags: 
+        - Key: Name
+          Value: LinuxInstance
+      UserData:
+        Fn::Base64: !Sub  |
+          #!/bin/bash -xe
+          yum update -y
+          yum update -y aws-cfn-bootstrap
+          amazon-linux-extras install php8.0 mariadb10.5 -y
+          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource MyEC2 --configsets MyConfigset --region ${AWS::Region}
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource MyEC2 --region ${AWS::Region}
+  MySG:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Allow http to client host
+        VpcId: !Ref MyVPC
+        GroupName: CLTSG/OregonVPC
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: 0.0.0.0/0
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: 0.0.0.0/0
+        SecurityGroupEgress:
+          - IpProtocol: -1
+            CidrIp: 0.0.0.0/0
+            
+  
+Outputs:
+  MyInstanceid:
+    Description: My ec2 Webserver ID
+    Value: !Ref MyEC2
+    
+  MyInstanceAZ:
+    Value: !GetAtt MyEC2.AvailabilityZone
+    
+  MyLocalIp:
+    Value: !GetAtt MyEC2.PrivateIp
+    
+  MyPublicIp:
+    Value: !GetAtt MyEC2.PublicIp
+    
+  MySGId:
+    Value: !GetAtt MySG.GroupId
+    
+  MyStacksRegion:
+    Value: !Ref "AWS::Region"
+    
+  MyAppLink:
+    Value: !Join
+      - ''
+      - - "http://"
+        - !GetAtt MyEC2.PublicIp
+
